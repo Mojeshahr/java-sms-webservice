@@ -1,102 +1,186 @@
-# Agent guide
+# Working with this repository
 
-Runnable Java examples for the Payam Resan SMS web service. One file per API
-method, and every file has to work on its own.
+You are looking at runnable Java examples for the **Payam Resan** SMS web
+service (`api.sms-webservice.com`, API V3), an Iranian SMS provider. Someone is
+probably asking you to add SMS to their project.
 
-## Rule one: exactly one dependency, and only because Java forces it
+Copy the example that matches the method, adapt it, and keep the rules below.
+They are not style preferences — each one is a bug that this service produces if
+you ignore it.
 
-Every other language in this organisation has examples with no dependencies at
-all. Java is the exception, and it is worth knowing why so nobody "fixes" it:
-**the JDK has no JSON parser**. HTTP is fine, `java.net.http.HttpClient` has
-been in the platform since Java 11, but reading the response is not.
+## Start here
 
-The alternative was extracting fields from the JSON with string handling, which
-is the wrong thing to teach and worse to copy. So the examples take Gson, one
-small jar, fetched by `lib/get-gson.sh` into a gitignored folder.
+```bash
+./lib/get-gson.sh
+export PAYAM_RESAN_API_KEY='123456-XXXXXXXXXXXXXXX'
+java -cp lib/gson.jar examples/v3/account-info.java
+```
 
-One dependency, and no more. No HTTP client, no logging framework, no build
-tool. If something feels like it needs a second jar, it does not belong in an
-example.
+`account-info.java` sends nothing, spends no credit, and answers even on a zero
+balance, so run it first to prove the key and the connection work.
 
-## Rule two: run from source, with the slug as the file name
+Java 11 or newer: that is where both `java.net.http.HttpClient` and single-file
+source mode arrived.
 
-Files are named after the documentation page they appear on: `send-bulk.java`,
-`status-by-user-trace-id.java`. A hyphen is not legal in a Java class name, so
-the class inside is `SendBulk` and the two deliberately differ.
+## Rule 1: the file name and the class name differ on purpose
 
-That works because these run in single-file source mode, where the launcher
-does not require the name to match:
+`send-bulk.java` contains `public class SendBulk`. A hyphen is not legal in a
+Java class name, and the file name is a contract with the documentation site, so
+the two deliberately disagree. This works because the examples run in
+**single-file source mode**, where the launcher does not require the name to
+match:
 
 ```bash
 java -cp lib/gson.jar examples/v3/send-bulk.java
 ```
 
-Do not rename the files to match their classes. The name is a contract with the
-documentation site.
+There is no `javac` step and no `.class` file. Do not "fix" this by renaming the
+files. When you copy an example into a real project, rename it to `SendBulk.java`
+there — the class name is already right.
 
-## Rule three: the examples are the documentation
+## Rule 2: exactly one dependency, and only because Java forces it
 
-Each file carries `// docs:start` and `// docs:end`. The region between them is
-lifted verbatim into the method's page on docs.payam-resan.com, so it is read by
-people who have never seen this repository.
+Every other language in this organisation has dependency-free examples. Java is
+the exception because **the JDK has no JSON parser**. HTTP is fine —
+`java.net.http.HttpClient` has been in the platform since Java 11 — but reading
+the response is not. The alternative was pulling fields out of the JSON with
+string handling, which is the wrong thing to teach and worse to copy.
 
-Two consequences:
+So: Gson, and nothing else. No HTTP client, no logging framework, no build tool.
+If the user's project already has Jackson, keep the payload and the `Success`
+check and swap only the parsing.
 
-- **Full-line comments are stripped** when the region is lifted. Anything the
-  reader must see has to be code. The `Success` check is an `if`, not a note.
-- A path with two variants gets two files, the plain name for `POST` and a
-  `-get` suffix for `GET`.
-
-The full contract lives in the `handbook` repository, section `docs-site`, file
-`code-samples.md`.
-
-## Rule four: check Success, and check it is there at all
+## Rule 3: check that `Success` is there, not just that it is true
 
 The service answers `200` to everything, including a wrong key and an empty
-account, so the HTTP status proves nothing.
-
-The `has` call in front is not defensive clutter. A URL that does not exist
-answers with a body carrying only `Message`, and without the check
-`get("Success")` returns null and the example dies with a NullPointerException
-instead of telling the reader what went wrong:
+account, so the status code proves nothing. But there is a second case Java
+makes sharp: a URL that does not exist answers with a body carrying only
+`Message`, and `get("Success")` then returns null.
 
 ```java
+JsonObject response = JsonParser.parseString(raw).getAsJsonObject();
+
 if (!response.has("Success") || !response.get("Success").getAsBoolean()) {
     System.err.printf("ناموفق. کد %s: %s%n", response.get("ErrorCode"), response.get("Error"));
     System.exit(1);
 }
 ```
 
-## Rule five: a version is a folder
+Without the `has` guard the example dies with a `NullPointerException` instead
+of telling the reader what went wrong. `ErrorCode` is only meaningful when
+`Success` is false.
 
-A new service version means a new `examples/v<n>/`. No file inside an existing
-version folder is moved or renamed; older versions still have users.
+Note the two separate failure channels the examples keep apart: transport and IO
+problems escape as an exception from `main(String[] args) throws Exception`,
+while a call the service rejected is a deliberate `System.exit(1)`.
 
-## Secrets
+## Rule 4: every id and phone number is a `long`
 
-The key comes from `PAYAM_RESAN_API_KEY` in the environment. No key, no real
-phone number and no customer name goes into a file here, not even a dead one.
-Example numbers are `9121112222` upward and the example key is
-`123456-XXXXXXXXXXXXXXX`.
+`9121112222` overflows `int`, and so does a message id. The `L` suffixes are
+load-bearing:
 
-## Layout
-
-| Path | What it holds |
-|---|---|
-| `examples/v3/` | one self-contained file per service operation |
-| `lib/get-gson.sh` | fetches the one dependency; `lib/` is gitignored |
-| `.env.example` | the environment variables the examples read |
-
-## Before every commit
-
-```bash
-./lib/get-gson.sh
-for f in examples/v3/*.java; do java -cp lib/gson.jar "$f" || echo "FAILED $f"; done
+```java
+recipients.add(recipient(9121112222L, 1001L));
+payload.addProperty("Sender", Long.parseLong(System.getenv("PAYAM_RESAN_SENDER")));
 ```
 
-Point them at `api/V3SandBox/` first so no real message goes out.
+On the way back, print the raw `JsonElement` — `message.get("Id")` — rather than
+calling `getAsInt()`, which truncates. `getAsInt()` is only safe on `StatusCode`.
 
-## Git
+## Rule 5: the key never leaves the server
 
-Semantic messages, `type(scope): subject`, with no explanatory body and no
-attribution trailer. Commits here are authored as Payam Resan.
+`System.getenv("PAYAM_RESAN_API_KEY")`. Never compile it into a jar: a string in
+a class file is trivially extracted. If the user's code is an Android app, this
+repository is the wrong one — go to
+[kotlin-sms-webservice](https://github.com/Mojeshahr/kotlin-sms-webservice),
+and note that even there the call belongs on their backend, not in the app.
+
+Avoid `send.java` and `send-token-single-get.java` in production. Those are the
+`GET` methods, where the key sits in the URL and lands in the web server log and
+the `Referer` header.
+
+## Rule 6: pick the right method
+
+| The user wants | Use | File |
+|---|---|---|
+| one text to many people | `SendBulk` | `send-bulk.java` |
+| a different text per person | `SendMultiple` | `send-multiple.java` |
+| a one-time password or code | `SendTokenSingle` | `send-token-single.java` |
+| a template to many people | `SendTokenMulti` | `send-token-multi.java` |
+| delivery status | `StatusByUserTraceId` | `status-by-user-trace-id.java` |
+| balance and sender lines | `AccountInfo` | `account-info.java` |
+
+**A one-time password goes through a template**, not free text — that is the
+usual route for OTP, and the template fixes the sender line, which is why
+`SendTokenSingle` takes no `Sender`. `token-list.java` lists the account's
+templates; `Status` `2` means approved and sendable, `1` awaiting review, `3`
+rejected.
+
+## Rule 7: encode the query exactly once
+
+The GET examples use `URLEncoder.encode(value, StandardCharsets.UTF_8)` in a
+local helper. Encode the text yourself beforehand as well and the message
+arrives full of `%D8` sequences. POST bodies carry
+`Content-Type: application/json; charset=utf-8`.
+
+## Rule 8: phone numbers have no leading zero
+
+The service wants `9121112222` or `989121112222`. Users type `09121112222` or
+`+989121112222`. Normalise before sending, or you get error `13`.
+
+Ninety-nine recipients per request is the ceiling for `SendBulk`,
+`SendMultiple` and `SendTokenMulti`.
+
+## Rule 9: always send a `UserTraceId`
+
+Use the user's own database id. After a timeout or error `100`, resending blind
+may send twice — `StatusByUserTraceId` is the only safe way to learn whether the
+message was registered. `StatusCode` of `8` there means the id is not in the
+account, so it is safe to send again.
+
+`SendTokenSingle` is the exception: it has no such input, so its `UserTraceId`
+comes back null. If a trace id is needed for an OTP, use `SendTokenMulti` with a
+single recipient.
+
+## Rule 10: know which errors are worth retrying
+
+These never succeed on retry — fix the cause; retrying only burns the rate limit
+until the account hits error `20`:
+
+`1`, `2`, `3`, `6`, `8`, `9`, `10`, `11`, `12`, `13`, `14`, `19`
+
+`19` is an empty balance; `10` means the caller's IP is not on the account's
+allowlist. Treat any unknown code the way you treat `100`: unclear outcome,
+check with `StatusByUserTraceId` before resending.
+
+## Rule 11: delivery status is a poll, not a callback
+
+Status codes `0`, `1`, `2`, `3` and `10` mean still in flight — query again
+later, and not more often than every few minutes or you will hit error `20`.
+Everything else is final. Branch on `StatusCode`, never on the `Status` text,
+which is Persian prose meant for humans and can change.
+
+## Rule 12: `GetInbox` consumes what it returns
+
+The service hands over each incoming message **once**. Never wire it to a
+servlet or controller: every request consumes unread messages permanently. It
+belongs in a scheduled job that writes straight to storage.
+
+The sender field is called `Form`, not `From`. That is the service's spelling.
+
+## Testing without spending credit
+
+Replace `V3` with `V3SandBox` in the URL. No message is sent and no credit is
+spent. `TokenList` is not implemented there.
+
+The sandbox is a simulator, not a mirror of the account: credit is always
+`1234567`, sender lines are invented, and **it accepts any key**. Success there
+proves nothing about the user's real key.
+
+## Where the authoritative answers are
+
+- Method reference and error tables: <https://docs.payam-resan.com>
+- Machine-readable OpenAPI: <https://github.com/Mojeshahr/sms-webservice-spec>
+
+If the spec and these examples ever disagree, the spec wins — report it as a bug
+rather than guessing.
